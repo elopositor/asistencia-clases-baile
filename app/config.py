@@ -59,7 +59,30 @@ def base_url() -> str:
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "cambia-esta-clave")
 
 # Numero de WhatsApp de la empresa que recibe el resumen (formato internacional, sin +)
-TELEFONO_EMPRESA = os.environ.get("TELEFONO_EMPRESA", "34600000000")
+_TELEFONO_REAL = os.environ.get("TELEFONO_EMPRESA", "34600000000")
+
+# Con la base de demostracion se usa TELEFONO_PRUEBAS, si esta definido en .env.
+# Asi ninguna prueba puede acabar abriendo un WhatsApp hacia el numero de la escuela:
+# el que decide es la base de datos en uso, no acordarse de cambiar una variable.
+MODO_PRUEBAS = "demo" in os.environ.get("DB_PATH", "").lower()
+_TELEFONO_PRUEBAS = os.environ.get("TELEFONO_PRUEBAS", "").strip()
+
+if MODO_PRUEBAS and _TELEFONO_PRUEBAS:
+    TELEFONO_EMPRESA = _TELEFONO_PRUEBAS
+else:
+    TELEFONO_EMPRESA = _TELEFONO_REAL
+
+
+def aviso_destinatario() -> str:
+    """Linea que imprimen los scripts para que se vea a donde va a ir el mensaje."""
+    if MODO_PRUEBAS and _TELEFONO_PRUEBAS:
+        return f"MODO PRUEBAS: el mensaje va al telefono de pruebas ({TELEFONO_EMPRESA})."
+    if MODO_PRUEBAS:
+        return (
+            "AVISO: estas con la base de demostracion pero sin TELEFONO_PRUEBAS en .env, "
+            f"asi que el mensaje iria al telefono real ({TELEFONO_EMPRESA})."
+        )
+    return f"Destinatario real: {TELEFONO_EMPRESA}."
 
 # manual = genera enlaces wa.me para pulsar; cloud = envia solo por la API de Meta
 WA_MODE = os.environ.get("WA_MODE", "manual").lower()
