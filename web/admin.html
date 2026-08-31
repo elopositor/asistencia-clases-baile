@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0708">
+  <title>Alumnos · On Stage</title>
+  <link rel="stylesheet" href="/static/estilo.css">
+</head>
+<body>
+  <div class="envoltorio ancho">
+    <header class="cabecera">
+      <p class="marca">On Stage · Administración</p>
+      <h1 class="titulo">Alumnos</h1>
+      <div class="regla"></div>
+      <a class="boton secundario" href="/panel">← Volver al panel</a>
+    </header>
+
+    <div id="acceso" hidden>
+      <div class="seccion" style="max-width:360px;margin:40px auto">
+        <h2>Acceso</h2>
+        <p class="nota">Introduce la clave de administración.</p>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <input type="password" id="clave" class="campo" style="flex:1" placeholder="Clave">
+          <button class="boton" id="entrar">Entrar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="app" hidden>
+      <div class="seccion">
+        <h2>Añadir alumno</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="nombre" class="campo" placeholder="Nombre y apellido" style="flex:2;min-width:180px">
+          <input id="telefono" class="campo" placeholder="Teléfono (600112233)" style="flex:1;min-width:150px">
+          <select id="sexo" class="campo"><option value="H">Hombre</option><option value="M">Mujer</option></select>
+          <button class="boton" id="anadir">Añadir</button>
+        </div>
+        <p class="nota" id="aviso" style="margin-top:10px"></p>
+      </div>
+
+      <div class="seccion">
+        <h2>Listado <span id="contador" style="color:var(--tenue)"></span></h2>
+        <div style="overflow-x:auto"><table class="tabla" id="tabla"></table></div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

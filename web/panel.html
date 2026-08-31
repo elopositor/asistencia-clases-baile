@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0708">
+  <title>Panel de asistencia · On Stage</title>
+  <link rel="stylesheet" href="/static/estilo.css">
+</head>
+<body>
+  <div class="envoltorio ancho">
+    <header class="cabecera">
+      <p class="marca">On Stage · Panel de empresa</p>
+      <h1 class="titulo">Asistencia</h1>
+      <div class="regla"></div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;align-items:center">
+        <input type="date" id="fecha" class="campo">
+        <button class="boton secundario" id="hoy">Hoy</button>
+        <a class="boton secundario" id="ir-admin" href="/admin">Alumnos</a>
+      </div>
+    </header>
+
+    <div id="acceso" hidden>
+      <div class="seccion" style="max-width:360px;margin:40px auto">
+        <h2>Acceso</h2>
+        <p class="nota">Introduce la clave de administración (ADMIN_KEY del fichero .env).</p>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <input type="password" id="clave" class="campo" style="flex:1" placeholder="Clave">
+          <button class="boton" id="entrar">Entrar</button>
+        </div>
+      </div>
+    </div>
+
+    <main id="contenido" class="cargando">Cargando…</main>
+  </div>
+
+  <dialog id="detalle"></dialog>
+  <script src="/static/panel.js"></script>
+</body>
+</html>
