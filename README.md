@@ -57,6 +57,14 @@ listo. La sugerencia se calcula con el histórico de las últimas 6 semanas.
 
 <p align="center"><i>Datos de la demostración, generados con <code>scripts/demo.py</code>.</i></p>
 
+**Y cuando una clase descuadra, quién falta por avisar.** Al pulsar una clase sale la lista
+nominal por sexo y, debajo, los alumnos del sexo que falta que suelen venir a esa clase y hoy
+no han confirmado — cada uno con su botón de WhatsApp listo:
+
+<p align="center">
+  <img src="docs/img/detalle-clase.png" alt="Detalle de una clase: lista nominal por sexo y sugerencia de a quién avisar" width="620">
+</p>
+
 <details>
 <summary><b>Alta y gestión de alumnos</b> (pulsa para ver)</summary>
 <br>
