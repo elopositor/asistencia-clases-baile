@@ -3,7 +3,8 @@
     python scripts/demo.py           -> crea data/demo.db y la deja lista
     python scripts/demo.py --limpiar -> borra la base de demo
 
-Usa una base aparte (data/demo.db) para no tocar los datos reales.
+Usa una base aparte (data/demo.db) para no tocar los datos reales. Se puede
+apuntar a otro fichero con la variable de entorno DB_PATH.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ))
-os.environ["DB_PATH"] = str(RAIZ / "data" / "demo.db")
+os.environ.setdefault("DB_PATH", str(RAIZ / "data" / "demo.db"))
 
 from app import config, db, horario, whatsapp  # noqa: E402
 
