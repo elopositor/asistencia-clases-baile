@@ -87,8 +87,34 @@ haberse apuntado.
 ## Si se va la red
 
 Los fichajes se guardan en `pendientes.json` dentro de la propia Pico y se reenvían
-cuando vuelve la conexión. Se comprueba cada dos minutos. No se pierde ninguna entrada
-mientras la Pico tenga corriente.
+cuando vuelve la conexión: se comprueba cada dos minutos, y también al arrancar. No se
+pierde ninguna entrada mientras la Pico tenga corriente.
+
+Cuando pasa, la pantalla avisa con **«Sin conexion / Quedas apuntado»**. No hay que hacer
+nada: el fichaje llegará solo.
+
+## Si deja de leer tarjetas
+
+Casi siempre es lo mismo: **la placa se ha quedado sin ejecutar el programa**. Pasa cuando
+alguien le copia ficheros o le habla por `mpremote`, porque eso la deja en modo consola y
+`main.py` no vuelve a arrancar por su cuenta.
+
+| Señal | Qué pasa |
+|---|---|
+| La pantalla no pone `Pasa tu llavero` | el programa no está corriendo |
+| Pasas la tarjeta y no hace nada | lo mismo |
+
+Se arregla de dos formas:
+
+```powershell
+python -m mpremote connect COM3 reset
+```
+
+o directamente **desenchufando y volviendo a enchufar** la Pico, que es lo más rápido y no
+necesita ordenador. Al arrancar tarda unos segundos en conectar al WiFi; si fichas justo en
+ese momento verás «Sin conexion», pero el fichaje se guarda igual.
+
+> Después de copiar ficheros a la placa, **reiníciala siempre**. Si no, se queda muda.
 
 ## La pantalla (opcional)
 
