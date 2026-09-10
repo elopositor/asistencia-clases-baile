@@ -346,7 +346,7 @@ def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None
         mensaje = f"{nombre}, ya fichaste a las {res['entrada']}"
     elif res["tipo"] == "salida":
         clases = ", ".join(c["etiqueta"] for c in res["clases"]) or "sin clase"
-        mensaje = f"Hasta luego {nombre} ({res['minutos']} min · {clases})"
+        mensaje = f"Hasta luego {nombre} ({clases})"
     elif not res["clase"]:
         mensaje = f"Hola {nombre} (fuera de horario)"
     else:
@@ -367,6 +367,16 @@ def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None
         "repetido": res["repetido"],
         "mensaje": mensaje,
     }
+
+
+@app.delete("/api/entradas")
+def api_borrar_entradas(d: str | None = None, todo: bool = False, key: str | None = None,
+                        x_admin_key: str | None = Header(None)):
+    """Borra los fichajes de un dia (o todos con todo=true). Para limpiar pruebas."""
+    _exigir_clave(key, x_admin_key)
+    fecha = None if todo else _fecha(d)
+    borrados = db.borrar_estancias(fecha)
+    return {"ok": True, "borrados": borrados, "fecha": fecha or "todas"}
 
 
 @app.get("/api/tarjetas")

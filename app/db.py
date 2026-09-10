@@ -589,6 +589,24 @@ def dentro_de_clase(fecha: str, clase_id: str) -> list[dict]:
     return sorted(gente, key=lambda g: g["hora"])
 
 
+def borrar_estancias(fecha: str | None = None) -> int:
+    """Borra los fichajes de un dia, o todos si no se dice fecha. Devuelve cuantos.
+
+    Pensado para dejar limpio despues de hacer pruebas.
+    """
+    with conectar() as con:
+        if fecha:
+            validar_fecha(fecha)
+            n = con.execute("SELECT COUNT(*) AS n FROM estancias WHERE fecha = ?", (fecha,)).fetchone()["n"]
+            con.execute("DELETE FROM estancias WHERE fecha = ?", (fecha,))
+            con.execute("DELETE FROM accesos WHERE fecha = ?", (fecha,))
+        else:
+            n = con.execute("SELECT COUNT(*) AS n FROM estancias").fetchone()["n"]
+            con.execute("DELETE FROM estancias")
+            con.execute("DELETE FROM accesos")
+    return n
+
+
 def dentro_ahora(fecha: str) -> list[dict]:
     """Quien ha entrado y todavia no ha fichado la salida."""
     return [e for e in estancias_del_dia(fecha) if not e["salida"]]

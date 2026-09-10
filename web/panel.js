@@ -127,6 +127,23 @@
     $("contenido").querySelectorAll(".fila-clase").forEach((b) => {
       b.addEventListener("click", () => abrirClase(b.dataset.id));
     });
+    // Borrado de fichajes, para dejar limpio despues de probar
+    const borrar = async (todo) => {
+      const que = todo
+        ? "TODOS los fichajes de entrada y salida, de todos los días"
+        : `los fichajes del ${fecha.split("-").reverse().join("/")}`;
+      if (!confirm(`¿Borrar ${que}?\n\nNo se puede deshacer. Los alumnos y sus clases apuntadas no se tocan.`))
+        return;
+      const r = await api(`/api/entradas?d=${fecha}${todo ? "&todo=true" : ""}`, { method: "DELETE" });
+      const j = await r.json();
+      if (r.ok) cargar();
+      else alert(`No se ha podido borrar: ${j.detail || r.status}`);
+    };
+    const btnDia = $("contenido").querySelector(".borrar-dia");
+    const btnTodo = $("contenido").querySelector(".borrar-todo");
+    if (btnDia) btnDia.addEventListener("click", () => borrar(false));
+    if (btnTodo) btnTodo.addEventListener("click", () => borrar(true));
+
     $("contenido").querySelectorAll(".ir-dia").forEach((b) => {
       b.addEventListener("click", () => {
         fecha = b.dataset.f;
@@ -162,9 +179,6 @@
       </div>`;
     }
 
-    const duracion = (m) =>
-      m === null || m === undefined ? "" : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
-
     const filas = d.entradas
       .map(
         (e) => `<tr>
@@ -172,7 +186,6 @@
           <td class="hora-entrada" style="${e.dentro ? "color:var(--verde)" : ""}">${
             e.salida ? escapar(e.salida) : "— dentro"
           }</td>
-          <td style="opacity:.7;font-size:13px">${duracion(e.minutos)}</td>
           <td>${escapar(e.nombre)} <span style="opacity:.5">${e.sexo}</span></td>
           <td>${
             e.clase
@@ -190,8 +203,13 @@
       }</h2>
       ${aviso}
       <div style="overflow-x:auto"><table class="tabla">
-        <tr><th>Entra</th><th>Sale</th><th>Tiempo</th><th>Alumno</th><th>Clases</th></tr>${filas}
+        <tr><th>Entra</th><th>Sale</th><th>Alumno</th><th>Clases</th></tr>${filas}
       </table></div>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+        <button class="boton secundario borrar-dia">Borrar los de este día</button>
+        <button class="boton secundario borrar-todo"
+                style="color:var(--rojo);border-color:rgba(207,75,75,.4)">Borrar todos</button>
+      </div>
     </div>`;
   }
 

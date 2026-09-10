@@ -224,14 +224,7 @@ def main():
                         senal("ok" if respuesta.get("previsto") else "aviso")
                         nombre = respuesta.get("nombre", "").split(" ")[0]
                         if respuesta.get("tipo") == "salida":
-                            # Al salir: cuanto ha estado, que es lo que le interesa ver
-                            minutos = respuesta.get("minutos") or 0
-                            if minutos >= 60:
-                                estuvo = "%dh %02dmin" % (minutos // 60, minutos % 60)
-                            else:
-                                estuvo = "%d min" % minutos
-                            decir("Hasta luego", nombre, 2)
-                            decir("Has estado", estuvo, 3)
+                            decir("Hasta luego", nombre, 3)
                             continue
                         if respuesta.get("repetido"):
                             segunda = "Ya fichado " + respuesta.get("entrada", "")
