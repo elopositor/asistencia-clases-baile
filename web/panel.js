@@ -162,25 +162,35 @@
       </div>`;
     }
 
+    const duracion = (m) =>
+      m === null || m === undefined ? "" : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+
     const filas = d.entradas
       .map(
         (e) => `<tr>
-          <td class="hora-entrada">${escapar(e.hora)}</td>
+          <td class="hora-entrada">${escapar(e.entrada)}</td>
+          <td class="hora-entrada" style="${e.dentro ? "color:var(--verde)" : ""}">${
+            e.salida ? escapar(e.salida) : "— dentro"
+          }</td>
+          <td style="opacity:.7;font-size:13px">${duracion(e.minutos)}</td>
           <td>${escapar(e.nombre)} <span style="opacity:.5">${e.sexo}</span></td>
           <td>${
             e.clase
-              ? `${escapar(e.clase_hora)} · ${escapar(e.clase)}`
-              : `<span style="opacity:.5">fuera de horario</span>`
+              ? escapar(e.clase)
+              : `<span style="opacity:.5">${e.dentro ? "aún dentro" : "fuera de horario"}</span>`
           }</td>
         </tr>`
       )
       .join("");
 
+    const dentro = d.entradas.filter((e) => e.dentro).length;
     return `<div class="seccion">
-      <h2>Entradas por la puerta · ${d.entradas.length}</h2>
+      <h2>Entradas por la puerta · ${d.entradas.length}${
+        dentro ? ` · <span style="color:var(--verde)">${dentro} dentro ahora</span>` : ""
+      }</h2>
       ${aviso}
       <div style="overflow-x:auto"><table class="tabla">
-        <tr><th>Hora</th><th>Alumno</th><th>Clase</th></tr>${filas}
+        <tr><th>Entra</th><th>Sale</th><th>Tiempo</th><th>Alumno</th><th>Clases</th></tr>${filas}
       </table></div>
     </div>`;
   }
@@ -223,7 +233,9 @@
     const d = await r.json();
     // Quien ha fichado en la puerta, para marcar en la lista quien esta ya dentro
     const horaDe = {};
-    (d.dentro || []).forEach((x) => (horaDe[x.nombre] = x.hora));
+    (d.dentro || []).forEach(
+      (x) => (horaDe[x.nombre] = x.salida ? `${x.hora}–${x.salida}` : `${x.hora}→`)
+    );
 
     const lista = (sexo) =>
       d.asistentes

@@ -341,10 +341,14 @@ def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None
 
     res = db.registrar_acceso(alumno["id"], dispositivo=dispositivo)
     nombre = alumno["nombre"].split()[0]
-    if not res["clase"]:
+
+    if res["repetido"]:
+        mensaje = f"{nombre}, ya fichaste a las {res['entrada']}"
+    elif res["tipo"] == "salida":
+        clases = ", ".join(c["etiqueta"] for c in res["clases"]) or "sin clase"
+        mensaje = f"Hasta luego {nombre} ({res['minutos']} min · {clases})"
+    elif not res["clase"]:
         mensaje = f"Hola {nombre} (fuera de horario)"
-    elif res["repetido"]:
-        mensaje = f"{nombre}, ya fichaste a las {res['hora']}"
     else:
         mensaje = f"Hola {nombre}" + ("" if res["previsto"] else " (no estabas apuntado)")
 
@@ -352,8 +356,13 @@ def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None
         "ok": True,
         "nombre": alumno["nombre"],
         "sexo": alumno["sexo"],
+        "tipo": res["tipo"],
         "clase": res["clase"]["etiqueta"] if res["clase"] else None,
+        "clases": [c["etiqueta"] for c in res["clases"]],
         "hora": res["hora"],
+        "entrada": res["entrada"],
+        "salida": res["salida"],
+        "minutos": res["minutos"],
         "previsto": res["previsto"],
         "repetido": res["repetido"],
         "mensaje": mensaje,

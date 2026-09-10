@@ -64,6 +64,21 @@ CREATE TABLE IF NOT EXISTS accesos (
 );
 CREATE INDEX IF NOT EXISTS ix_accesos_fecha ON accesos (fecha);
 
+-- Cada paso por la puerta: se entra y se sale con el mismo llavero. Mientras
+-- 'salida' este vacia, el alumno esta dentro. De la pareja entrada/salida sale a
+-- que clases asistio de verdad, no solo a cual llego.
+CREATE TABLE IF NOT EXISTS estancias (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    alumno_id   INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+    fecha       TEXT NOT NULL,
+    entrada     TEXT NOT NULL,
+    salida      TEXT,
+    dispositivo TEXT NOT NULL DEFAULT '',
+    creado      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_estancias_fecha ON estancias (fecha);
+CREATE INDEX IF NOT EXISTS ix_estancias_abierta ON estancias (alumno_id, fecha, salida);
+
 -- Tarjetas leidas que aun no pertenecen a nadie, para poder asignarlas desde /admin
 -- con un clic en vez de teclear el UID a mano.
 CREATE TABLE IF NOT EXISTS tarjetas_sin_duenno (
@@ -101,6 +116,20 @@ def inicializar() -> None:
         con.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_alumnos_tarjeta ON alumnos (tarjeta_uid)"
         )
+        # Los fichajes viejos, de cuando solo se registraba la entrada, pasan a ser
+        # estancias sin hora de salida. No se pierde nada.
+        pendiente = con.execute(
+            "SELECT COUNT(*) AS n FROM accesos a WHERE NOT EXISTS ("
+            "  SELECT 1 FROM estancias e WHERE e.alumno_id = a.alumno_id"
+            "    AND e.fecha = a.fecha AND e.entrada = a.hora)"
+        ).fetchone()["n"]
+        if pendiente:
+            con.execute(
+                "INSERT INTO estancias (alumno_id, fecha, entrada, salida, dispositivo, creado)"
+                " SELECT a.alumno_id, a.fecha, a.hora, NULL, a.dispositivo, a.creado FROM accesos a"
+                " WHERE NOT EXISTS (SELECT 1 FROM estancias e WHERE e.alumno_id = a.alumno_id"
+                "   AND e.fecha = a.fecha AND e.entrada = a.hora)"
+            )
 
 
 def _ahora() -> str:
@@ -193,9 +222,14 @@ def listar_alumnos(solo_activos: bool = False, con_ultimo_acceso: bool = False) 
     """
     if con_ultimo_acceso:
         sql = (
-            "SELECT al.*, (SELECT a.fecha || ' ' || a.hora FROM accesos a"
-            "   WHERE a.alumno_id = al.id ORDER BY a.fecha DESC, a.hora DESC LIMIT 1"
-            " ) AS ultimo_acceso FROM alumnos al"
+            "SELECT al.*,"
+            " (SELECT e.fecha || ' ' || e.entrada FROM estancias e"
+            "    WHERE e.alumno_id = al.id ORDER BY e.fecha DESC, e.entrada DESC LIMIT 1"
+            " ) AS ultimo_acceso,"
+            " (SELECT COUNT(*) FROM estancias e WHERE e.alumno_id = al.id) AS veces,"
+            " (SELECT 1 FROM estancias e WHERE e.alumno_id = al.id AND e.salida IS NULL"
+            "    AND e.fecha = date('now','localtime')) AS dentro"
+            " FROM alumnos al"
         )
         if solo_activos:
             sql += " WHERE al.activo = 1"
@@ -412,91 +446,199 @@ def clase_en_curso(fecha: str, hora: str, alumno_id: int | None = None) -> dict 
     return min(candidatas, key=lambda c: abs(ahora - _minutos(c["hora"])))
 
 
+# Por debajo de esto, dos pasadas seguidas son el mismo gesto (se paso dos veces
+# el llavero sin querer), no una entrada y una salida relampago.
+MINUTOS_MINIMOS = 3
+
+
 def registrar_acceso(alumno_id: int, momento: datetime | None = None, dispositivo: str = "") -> dict:
-    """Apunta una entrada real. Repetir el fichaje en la misma clase no duplica."""
+    """Un paso por la puerta: abre la estancia si estaba fuera, la cierra si dentro."""
     momento = momento or datetime.now()
     fecha = momento.date().isoformat()
     hora = momento.strftime("%H:%M")
-    clase = clase_en_curso(fecha, hora, alumno_id)
-    clase_id = clase["id"] if clase else None
 
     with conectar() as con:
-        ya = con.execute(
-            "SELECT hora FROM accesos WHERE alumno_id = ? AND fecha = ? AND clase_id IS ?",
-            (alumno_id, fecha, clase_id),
+        abierta = con.execute(
+            "SELECT id, entrada FROM estancias WHERE alumno_id = ? AND fecha = ? AND salida IS NULL"
+            " ORDER BY entrada DESC LIMIT 1",
+            (alumno_id, fecha),
         ).fetchone()
-        if ya:
-            repetido, hora = True, ya["hora"]
-        else:
-            repetido = False
-            con.execute(
-                "INSERT INTO accesos (alumno_id, fecha, hora, clase_id, dispositivo, creado)"
-                " VALUES (?,?,?,?,?,?)",
-                (alumno_id, fecha, hora, clase_id, dispositivo, _ahora()),
-            )
 
-    previsto = bool(clase_id) and clase_id in seleccion_de(alumno_id, fecha)
+        if abierta:
+            dentro = _minutos(hora) - _minutos(abierta["entrada"])
+            if dentro < MINUTOS_MINIMOS:
+                # Doble toque: se deja la entrada como estaba
+                tipo, repetido, entrada, salida = "entrada", True, abierta["entrada"], None
+            else:
+                con.execute("UPDATE estancias SET salida = ? WHERE id = ?", (hora, abierta["id"]))
+                tipo, repetido, entrada, salida = "salida", False, abierta["entrada"], hora
+        else:
+            # Si acaba de salir y vuelve a pasar el llavero, es que se le ha ido la
+            # mano: se deshace la salida en vez de crear una entrada nueva, que le
+            # dejaria como presente despues de haberse ido.
+            recien = con.execute(
+                "SELECT id, entrada, salida FROM estancias WHERE alumno_id = ? AND fecha = ?"
+                " AND salida IS NOT NULL ORDER BY salida DESC LIMIT 1",
+                (alumno_id, fecha),
+            ).fetchone()
+            if recien and _minutos(hora) - _minutos(recien["salida"]) < MINUTOS_MINIMOS:
+                con.execute("UPDATE estancias SET salida = NULL WHERE id = ?", (recien["id"],))
+                tipo, repetido, entrada, salida = "entrada", True, recien["entrada"], None
+            else:
+                con.execute(
+                    "INSERT INTO estancias (alumno_id, fecha, entrada, salida, dispositivo, creado)"
+                    " VALUES (?,?,?,NULL,?,?)",
+                    (alumno_id, fecha, hora, dispositivo, _ahora()),
+                )
+                tipo, repetido, entrada, salida = "entrada", False, hora, None
+
+    clases = clases_de_estancia(fecha, entrada, salida, alumno_id)
+    confirmadas = set(seleccion_de(alumno_id, fecha))
+    clase_actual = clase_en_curso(fecha, hora, alumno_id)
+
     return {
         "fecha": fecha,
         "hora": hora,
-        "clase": clase,
+        "tipo": tipo,
+        "entrada": entrada,
+        "salida": salida,
+        "minutos": (_minutos(salida) - _minutos(entrada)) if salida else None,
+        "clase": clase_actual,
+        "clases": clases,
         "repetido": repetido,
-        "previsto": previsto,
+        "previsto": bool(clase_actual) and clase_actual["id"] in confirmadas,
     }
 
 
-def presentes(fecha: str) -> dict[str, dict[str, int]]:
-    """Cuantos han entrado de verdad en cada clase, por sexo."""
+def clases_de_estancia(fecha: str, entrada: str, salida: str | None,
+                       alumno_id: int | None = None) -> list[dict]:
+    """Clases a las que fue de verdad, deducidas de la hora de entrada y de salida.
+
+    Las dos salas van a la vez, asi que el tiempo dentro no basta: alguien que esta
+    dos horas solapa con clases de las dos salas y no puede haber ido a ambas. Manda
+    lo que el alumno confirmo; si no confirmo nada, se le asigna la sala con la que
+    mas tiempo coincide, en vez de contarlo dos veces.
+    """
+    dia = date.fromisoformat(fecha).isoweekday()
+    desde = _minutos(entrada)
+    if salida is None:
+        c = clase_en_curso(fecha, entrada, alumno_id)
+        return [c] if c else []
+
+    hasta = _minutos(salida)
+    solape = {}
+    for c in horario.clases_del_dia(dia):
+        inicio = _minutos(c["hora"])
+        minutos = min(hasta, inicio + 60) - max(desde, inicio)
+        if minutos >= 30:          # cuenta si estuvo al menos media clase
+            solape[c["id"]] = (c, minutos)
+
+    if not solape:
+        return []
+
+    confirmadas = set(seleccion_de(alumno_id, fecha)) if alumno_id else set()
+    elegidas = [c for cid, (c, _) in solape.items() if cid in confirmadas]
+
+    if not elegidas:
+        # Sin confirmacion no se puede saber de que sala fue: se queda la sala con
+        # la que mas tiempo coincide, que es lo mas probable y no duplica a nadie.
+        por_sala: dict[int, int] = {}
+        for c, minutos in solape.values():
+            por_sala[c["sala"]] = por_sala.get(c["sala"], 0) + minutos
+        mejor = max(por_sala, key=lambda s: por_sala[s])
+        elegidas = [c for c, _ in solape.values() if c["sala"] == mejor]
+
+    return sorted(elegidas, key=lambda c: c["hora"])
+
+
+def estancias_del_dia(fecha: str) -> list[dict]:
     with conectar() as con:
         filas = con.execute(
-            "SELECT a.clase_id, al.sexo, COUNT(*) AS n FROM accesos a"
-            " JOIN alumnos al ON al.id = a.alumno_id"
-            " WHERE a.fecha = ? AND a.clase_id IS NOT NULL"
-            " GROUP BY a.clase_id, al.sexo",
+            "SELECT e.*, al.nombre, al.sexo FROM estancias e"
+            " JOIN alumnos al ON al.id = e.alumno_id"
+            " WHERE e.fecha = ? ORDER BY e.entrada DESC",
             (fecha,),
-        ).fetchall()
-    salida: dict[str, dict[str, int]] = {}
-    for f in filas:
-        d = salida.setdefault(f["clase_id"], {"H": 0, "M": 0})
-        d[f["sexo"]] = f["n"]
-    return salida
-
-
-def dentro_de_clase(fecha: str, clase_id: str) -> list[dict]:
-    with conectar() as con:
-        filas = con.execute(
-            "SELECT al.nombre, al.sexo, a.hora FROM accesos a"
-            " JOIN alumnos al ON al.id = a.alumno_id"
-            " WHERE a.fecha = ? AND a.clase_id = ? ORDER BY a.hora",
-            (fecha, clase_id),
         )
         return [dict(f) for f in filas]
 
 
+def presentes(fecha: str) -> dict[str, dict[str, int]]:
+    """Cuantos estuvieron de verdad en cada clase, por sexo."""
+    salida: dict[str, dict[str, int]] = {}
+    for e in estancias_del_dia(fecha):
+        for c in clases_de_estancia(fecha, e["entrada"], e["salida"], e["alumno_id"]):
+            d = salida.setdefault(c["id"], {"H": 0, "M": 0})
+            d[e["sexo"]] += 1
+    return salida
+
+
+def dentro_de_clase(fecha: str, clase_id: str) -> list[dict]:
+    """Quien estuvo en esa clase, con su hora de entrada y de salida."""
+    gente = []
+    for e in estancias_del_dia(fecha):
+        if any(c["id"] == clase_id
+               for c in clases_de_estancia(fecha, e["entrada"], e["salida"], e["alumno_id"])):
+            gente.append(
+                {
+                    "nombre": e["nombre"],
+                    "sexo": e["sexo"],
+                    "hora": e["entrada"],
+                    "salida": e["salida"],
+                }
+            )
+    return sorted(gente, key=lambda g: g["hora"])
+
+
+def dentro_ahora(fecha: str) -> list[dict]:
+    """Quien ha entrado y todavia no ha fichado la salida."""
+    return [e for e in estancias_del_dia(fecha) if not e["salida"]]
+
+
 def accesos_del_dia(fecha: str) -> list[dict]:
-    """Todas las entradas del dia, tambien las de fuera del horario de clase.
+    """Entradas y salidas del dia, tambien las de fuera del horario de clase.
 
     Sin esto, quien ficha a una hora en la que no hay clase queda registrado pero
     no aparece en ninguna pantalla, y parece que el lector no funciona.
     """
-    with conectar() as con:
-        filas = con.execute(
-            "SELECT al.nombre, al.sexo, a.hora, a.clase_id, a.dispositivo FROM accesos a"
-            " JOIN alumnos al ON al.id = a.alumno_id"
-            " WHERE a.fecha = ? ORDER BY a.hora DESC",
-            (fecha,),
-        ).fetchall()
     salida = []
-    for f in filas:
-        clase = horario.POR_ID.get(f["clase_id"] or "")
+    for e in estancias_del_dia(fecha):
+        clases = clases_de_estancia(fecha, e["entrada"], e["salida"], e["alumno_id"])
+        minutos = (_minutos(e["salida"]) - _minutos(e["entrada"])) if e["salida"] else None
         salida.append(
             {
-                "nombre": f["nombre"],
-                "sexo": f["sexo"],
-                "hora": f["hora"],
-                "clase": clase["etiqueta"] if clase else "",
-                "clase_hora": clase["hora"] if clase else "",
-                "dispositivo": f["dispositivo"],
+                "nombre": e["nombre"],
+                "sexo": e["sexo"],
+                "hora": e["entrada"],
+                "entrada": e["entrada"],
+                "salida": e["salida"],
+                "minutos": minutos,
+                "dentro": e["salida"] is None,
+                "clase": ", ".join(c["etiqueta"] for c in clases),
+                "clase_hora": clases[0]["hora"] if clases else "",
+                "dispositivo": e["dispositivo"],
+            }
+        )
+    return salida
+
+
+def historico_de(alumno_id: int, limite: int = 60) -> list[dict]:
+    """A que clases ha ido este alumno, de lo mas reciente a lo mas antiguo."""
+    with conectar() as con:
+        filas = con.execute(
+            "SELECT * FROM estancias WHERE alumno_id = ?"
+            " ORDER BY fecha DESC, entrada DESC LIMIT ?",
+            (alumno_id, limite),
+        ).fetchall()
+    salida = []
+    for e in filas:
+        clases = clases_de_estancia(e["fecha"], e["entrada"], e["salida"], alumno_id)
+        salida.append(
+            {
+                "fecha": e["fecha"],
+                "entrada": e["entrada"],
+                "salida": e["salida"],
+                "minutos": (_minutos(e["salida"]) - _minutos(e["entrada"])) if e["salida"] else None,
+                "clases": [c["etiqueta"] for c in clases],
             }
         )
     return salida
