@@ -589,6 +589,13 @@ def dentro_de_clase(fecha: str, clase_id: str) -> list[dict]:
     return sorted(gente, key=lambda g: g["hora"])
 
 
+def borrar_estancia(estancia_id: int) -> bool:
+    """Borra un fichaje concreto, el de una linea del panel."""
+    with conectar() as con:
+        cur = con.execute("DELETE FROM estancias WHERE id = ?", (estancia_id,))
+        return cur.rowcount > 0
+
+
 def borrar_estancias(fecha: str | None = None) -> int:
     """Borra los fichajes de un dia, o todos si no se dice fecha. Devuelve cuantos.
 
@@ -624,6 +631,7 @@ def accesos_del_dia(fecha: str) -> list[dict]:
         minutos = (_minutos(e["salida"]) - _minutos(e["entrada"])) if e["salida"] else None
         salida.append(
             {
+                "id": e["id"],
                 "nombre": e["nombre"],
                 "sexo": e["sexo"],
                 "hora": e["entrada"],

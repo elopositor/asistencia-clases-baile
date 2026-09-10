@@ -379,6 +379,16 @@ def api_borrar_entradas(d: str | None = None, todo: bool = False, key: str | Non
     return {"ok": True, "borrados": borrados, "fecha": fecha or "todas"}
 
 
+@app.delete("/api/entradas/{estancia_id}")
+def api_borrar_entrada(estancia_id: int, key: str | None = None,
+                       x_admin_key: str | None = Header(None)):
+    """Borra un fichaje suelto, el de una linea del panel."""
+    _exigir_clave(key, x_admin_key)
+    if not db.borrar_estancia(estancia_id):
+        raise HTTPException(status_code=404, detail="Ese fichaje ya no existe")
+    return {"ok": True}
+
+
 @app.get("/api/tarjetas")
 def api_tarjetas(key: str | None = None, x_admin_key: str | None = Header(None)):
     """Tarjetas leidas que aun no son de nadie, para asignarlas desde /admin."""

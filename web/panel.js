@@ -139,6 +139,21 @@
       if (r.ok) cargar();
       else alert(`No se ha podido borrar: ${j.detail || r.status}`);
     };
+    // Borrar un fichaje suelto, sin preguntar: es una linea y se vuelve a fichar
+    $("contenido").querySelectorAll(".borrar-uno").forEach((b) => {
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        b.textContent = "…";
+        const r = await api(`/api/entradas/${b.dataset.id}`, { method: "DELETE" });
+        if (r.ok) cargar();
+        else {
+          b.disabled = false;
+          b.textContent = "Borrar";
+          alert("No se ha podido borrar esa línea.");
+        }
+      });
+    });
+
     const btnDia = $("contenido").querySelector(".borrar-dia");
     const btnTodo = $("contenido").querySelector(".borrar-todo");
     if (btnDia) btnDia.addEventListener("click", () => borrar(false));
@@ -182,16 +197,19 @@
     const filas = d.entradas
       .map(
         (e) => `<tr>
+          <td><b>${escapar(e.nombre)}</b> <span style="opacity:.5">${e.sexo}</span></td>
           <td class="hora-entrada">${escapar(e.entrada)}</td>
           <td class="hora-entrada" style="${e.dentro ? "color:var(--verde)" : ""}">${
             e.salida ? escapar(e.salida) : "— dentro"
           }</td>
-          <td>${escapar(e.nombre)} <span style="opacity:.5">${e.sexo}</span></td>
           <td>${
             e.clase
               ? escapar(e.clase)
               : `<span style="opacity:.5">${e.dentro ? "aún dentro" : "fuera de horario"}</span>`
           }</td>
+          <td><button class="boton secundario borrar-uno" data-id="${e.id}"
+                      style="padding:4px 10px;font-size:12px;color:var(--rojo);border-color:rgba(207,75,75,.35)"
+                      title="Borrar este fichaje">Borrar</button></td>
         </tr>`
       )
       .join("");
@@ -203,7 +221,7 @@
       }</h2>
       ${aviso}
       <div style="overflow-x:auto"><table class="tabla">
-        <tr><th>Entra</th><th>Sale</th><th>Alumno</th><th>Clases</th></tr>${filas}
+        <tr><th>Alumno</th><th>Entra</th><th>Sale</th><th>Clases</th><th></th></tr>${filas}
       </table></div>
       <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
         <button class="boton secundario borrar-dia">Borrar los de este día</button>

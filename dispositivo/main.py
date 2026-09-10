@@ -18,6 +18,8 @@ import mfrc522
 
 led = Pin("LED", Pin.OUT)          # el LED de la propia Pico W
 PENDIENTES = "pendientes.json"     # fichajes que no se pudieron enviar
+SERVIDOR_GUARDADO = "servidor.txt"  # ultima direccion del servidor que funciono
+_servidor = ""
 
 # La pantalla es opcional: si no esta conectada, todo funciona igual pero sin ella.
 pantalla = None
@@ -103,11 +105,97 @@ def conectar_wifi(espera=20):
     return wlan
 
 
+def responde(url):
+    """True si en esa direccion esta nuestro servidor (y no otra cosa cualquiera)."""
+    try:
+        r = urequests.get(url.rstrip("/") + "/api/horario")
+        try:
+            return r.status_code == 200 and "salas" in r.text[:200]
+        finally:
+            r.close()
+    except Exception:
+        return False
+
+
+def buscar_servidor():
+    """Recorre la red buscando el servidor.
+
+    El PC coge la IP por DHCP, asi que el router puede darle otra distinta un dia
+    cualquiera. En vez de dejar el lector muerto, se busca por toda la red y se
+    guarda la que funcione.
+    """
+    import socket
+
+    w = network.WLAN(network.STA_IF)
+    if not w.isconnected():
+        return None
+    base = w.ifconfig()[0].rsplit(".", 1)[0]
+    print("Buscando el servidor en", base + ".x")
+    decir("Buscando", "el servidor...")
+
+    for i in range(1, 255):
+        ip = "%s.%d" % (base, i)
+        s = socket.socket()
+        s.settimeout(0.12)
+        abierto = False
+        try:
+            s.connect((ip, 8000))
+            abierto = True
+        except Exception:
+            pass
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+        if abierto:
+            url = "http://%s:8000" % ip
+            if responde(url):
+                print("Servidor encontrado en", url)
+                try:
+                    with open(SERVIDOR_GUARDADO, "w") as f:
+                        f.write(url)
+                except Exception:
+                    pass
+                return url
+    print("No se ha encontrado el servidor en la red")
+    return None
+
+
+def servidor():
+    """Direccion del servidor: la guardada si la hay, si no la del config."""
+    global _servidor
+    if _servidor:
+        return _servidor
+    try:
+        with open(SERVIDOR_GUARDADO) as f:
+            guardada = f.read().strip()
+        if guardada.startswith("http"):
+            _servidor = guardada
+            return _servidor
+    except Exception:
+        pass
+    _servidor = config.SERVIDOR
+    return _servidor
+
+
+def revisar_servidor():
+    """Comprueba que el servidor sigue donde estaba; si no, lo busca."""
+    global _servidor
+    if responde(servidor()):
+        return True
+    otro = buscar_servidor()
+    if otro:
+        _servidor = otro
+        return True
+    return False
+
+
 def enviar(uid):
     """Manda un fichaje. Devuelve el texto a mostrar, o None si no hubo red."""
     try:
         r = urequests.post(
-            config.SERVIDOR.rstrip("/") + "/api/fichaje",
+            servidor().rstrip("/") + "/api/fichaje",
             headers={"Content-Type": "application/json", "X-Device-Key": config.DEVICE_KEY},
             data=ujson.dumps({"uid": uid, "dispositivo": config.NOMBRE}),
         )
@@ -171,6 +259,8 @@ def main():
     decir("   ON STAGE", "  arrancando...")
 
     conectar_wifi()
+    if not revisar_servidor():
+        decir("Sin servidor", "Sigo intentando", 3)
     reenviar_pendientes()
     lector = mfrc522.crear()
 
@@ -254,7 +344,10 @@ def main():
             if not wlan.isconnected():
                 conectar_wifi(espera=10)
             elif leer_pendientes():
-                reenviar_pendientes()
+                # Si hay cola es que algo falla: puede que el PC haya cambiado de IP
+                if revisar_servidor():
+                    reenviar_pendientes()
+                    reposo()
 
         sleep_ms(150)
 
