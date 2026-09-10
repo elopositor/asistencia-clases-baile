@@ -92,6 +92,9 @@ WA_PLANTILLA = os.environ.get("WA_PLANTILLA", "recordatorio_clase")
 WA_IDIOMA = os.environ.get("WA_IDIOMA", "es")
 WA_VERIFY_TOKEN = os.environ.get("WA_VERIFY_TOKEN", "onstage-verify")
 
+# Clave que usa el lector de la puerta para fichar. Vacia = fichaje desactivado.
+DEVICE_KEY = os.environ.get("DEVICE_KEY", "")
+
 # Aviso de descompensacion: a partir de cuanta diferencia H/M se marca la clase
 UMBRAL_AMBAR = int(os.environ.get("UMBRAL_AMBAR", "2"))
 UMBRAL_ROJO = int(os.environ.get("UMBRAL_ROJO", "4"))

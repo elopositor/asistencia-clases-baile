@@ -13,11 +13,12 @@ if (Get-ScheduledTask -TaskName "OnStage-Publicar" -ErrorAction SilentlyContinue
 }
 
 $muertos = 0
-Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cloudflared.exe' OR Name='powershell.exe'" |
+Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cloudflared.exe' OR Name='ngrok.exe' OR Name='powershell.exe'" |
     Where-Object {
         $_.ProcessId -ne $PID -and
         ($_.CommandLine -match "uvicorn\s+app\.main:app" -or
          $_.CommandLine -match "tunnel --no-autoupdate" -or
+         $_.CommandLine -match "ngrok.exe.* http" -or
          $_.CommandLine -match "publicar\.ps1")
     } |
     ForEach-Object {

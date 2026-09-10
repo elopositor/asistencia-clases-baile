@@ -16,8 +16,22 @@ db.inicializar()
 app.mount("/static", StaticFiles(directory=config.WEB), name="static")
 
 
-def _pagina(nombre: str) -> FileResponse:
-    return FileResponse(config.WEB / nombre, media_type="text/html; charset=utf-8")
+def _pagina(nombre: str) -> HTMLResponse:
+    """Sirve una pagina anadiendo la version a su CSS y su JS.
+
+    Sin esto el navegador se queda con la copia guardada: cambias el panel, el
+    usuario recarga y sigue viendo lo de antes sin entender por que.
+    """
+    html = (config.WEB / nombre).read_text(encoding="utf-8")
+
+    def versionar(fichero: str) -> str:
+        ruta = config.WEB / fichero
+        marca = int(ruta.stat().st_mtime) if ruta.exists() else 0
+        return f"/static/{fichero}?v={marca}"
+
+    for fichero in ("estilo.css", "panel.js", "alumno.js", "admin.js"):
+        html = html.replace(f"/static/{fichero}", versionar(fichero))
+    return HTMLResponse(html)
 
 
 def _exigir_clave(key: str | None, cabecera: str | None) -> None:
@@ -144,18 +158,31 @@ def api_panel(d: str | None = None, key: str | None = None, x_admin_key: str | N
     clases = db.recuento(fecha)
     activos = [a for a in db.listar_alumnos(solo_activos=True)]
     pendientes = db.sin_responder(fecha)
+
+    # Lo que dijeron que harian (clases) frente a lo que hicieron (accesos).
+    dentro = db.presentes(fecha)
+    for c in clases:
+        p = dentro.get(c["id"], {})
+        c["dentro_hombres"] = p.get("H", 0)
+        c["dentro_mujeres"] = p.get("M", 0)
+        c["dentro"] = c["dentro_hombres"] + c["dentro_mujeres"]
+
     return {
         "fecha": fecha,
         "dia_nombre": horario.NOMBRE_DIA[date.fromisoformat(fecha).isoweekday()],
         "clases": clases,
+        "control_acceso": bool(config.DEVICE_KEY),
         "totales": {
             "hombres": sum(c["hombres"] for c in clases),
             "mujeres": sum(c["mujeres"] for c in clases),
             "asistencias": sum(c["total"] for c in clases),
+            "dentro": sum(c["dentro"] for c in clases),
             "alumnos_activos": len(activos),
             "han_contestado": len(activos) - len(pendientes),
             "pendientes": len(pendientes),
         },
+        "entradas": db.accesos_del_dia(fecha) if config.DEVICE_KEY else [],
+        "tarjetas_sin_asignar": len(db.tarjetas_sin_duenno()) if config.DEVICE_KEY else 0,
         "dias_con_datos": db.dias_con_confirmaciones(fecha),
         "resumen_texto": whatsapp.mensaje_resumen(fecha),
         "enlace_resumen_wa": whatsapp.enlace_wa_me(
@@ -177,6 +204,7 @@ def api_clase(clase_id: str, d: str | None = None, key: str | None = None,
         "clase": horario.POR_ID[clase_id],
         "fecha": fecha,
         "asistentes": db.nominal(fecha, clase_id),
+        "dentro": db.dentro_de_clase(fecha, clase_id),
         "sugerencias": db.candidatos_para_equilibrar(fecha, clase_id, falta) if falta else [],
         "falta_sexo": falta,
     }
@@ -185,7 +213,7 @@ def api_clase(clase_id: str, d: str | None = None, key: str | None = None,
 @app.get("/api/alumnos")
 def api_listar(key: str | None = None, x_admin_key: str | None = Header(None)):
     _exigir_clave(key, x_admin_key)
-    alumnos = db.listar_alumnos()
+    alumnos = db.listar_alumnos(con_ultimo_acceso=True)
     for a in alumnos:
         a["enlace"] = whatsapp.enlace_alumno(a["token"], db.hoy())
     return {"alumnos": alumnos, "total": len(alumnos)}
@@ -271,6 +299,84 @@ def api_resumen(d: str | None = None, key: str | None = None,
                 x_admin_key: str | None = Header(None)):
     _exigir_clave(key, x_admin_key)
     return whatsapp.mensaje_resumen(_fecha(d))
+
+
+# --------------------------------------------------------------------------- #
+# Lector de la puerta
+# --------------------------------------------------------------------------- #
+@app.post("/api/fichaje")
+def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None)):
+    """Una entrada real leida por el lector RFID (o por un QR).
+
+    Responde siempre 200 con un texto corto para que el aparato lo cante por su
+    pantalla o su LED; los errores de verdad (clave mala) si son 4xx.
+    """
+    if not config.DEVICE_KEY:
+        raise HTTPException(status_code=503, detail="Fichaje desactivado: falta DEVICE_KEY en .env")
+    if x_device_key != config.DEVICE_KEY:
+        raise HTTPException(status_code=401, detail="Clave de dispositivo incorrecta")
+
+    dispositivo = str(cuerpo.get("dispositivo", ""))[:40]
+    uid = cuerpo.get("uid")
+    token = cuerpo.get("token")
+
+    alumno = None
+    if uid:
+        try:
+            alumno = db.alumno_por_uid(str(uid))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+        if not alumno:
+            db.anotar_tarjeta_desconocida(str(uid))
+            return {"ok": False, "motivo": "desconocida", "mensaje": "Tarjeta sin asignar"}
+    elif token:
+        alumno = db.alumno_por_token(str(token))
+        if not alumno:
+            return {"ok": False, "motivo": "desconocida", "mensaje": "Codigo no valido"}
+    else:
+        raise HTTPException(status_code=400, detail="Falta 'uid' o 'token'")
+
+    if not alumno["activo"]:
+        return {"ok": False, "motivo": "baja", "mensaje": f"{alumno['nombre']}: dado de baja"}
+
+    res = db.registrar_acceso(alumno["id"], dispositivo=dispositivo)
+    nombre = alumno["nombre"].split()[0]
+    if not res["clase"]:
+        mensaje = f"Hola {nombre} (fuera de horario)"
+    elif res["repetido"]:
+        mensaje = f"{nombre}, ya fichaste a las {res['hora']}"
+    else:
+        mensaje = f"Hola {nombre}" + ("" if res["previsto"] else " (no estabas apuntado)")
+
+    return {
+        "ok": True,
+        "nombre": alumno["nombre"],
+        "sexo": alumno["sexo"],
+        "clase": res["clase"]["etiqueta"] if res["clase"] else None,
+        "hora": res["hora"],
+        "previsto": res["previsto"],
+        "repetido": res["repetido"],
+        "mensaje": mensaje,
+    }
+
+
+@app.get("/api/tarjetas")
+def api_tarjetas(key: str | None = None, x_admin_key: str | None = Header(None)):
+    """Tarjetas leidas que aun no son de nadie, para asignarlas desde /admin."""
+    _exigir_clave(key, x_admin_key)
+    return {"tarjetas": db.tarjetas_sin_duenno()}
+
+
+@app.post("/api/alumnos/{alumno_id}/tarjeta")
+def api_asignar_tarjeta(alumno_id: int, cuerpo: dict = Body(...), key: str | None = None,
+                        x_admin_key: str | None = Header(None)):
+    _exigir_clave(key, x_admin_key)
+    try:
+        return db.asignar_tarjeta(alumno_id, cuerpo.get("uid") or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado") from None
 
 
 @app.get("/api/horario")

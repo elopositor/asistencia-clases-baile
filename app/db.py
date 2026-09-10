@@ -49,7 +49,35 @@ CREATE TABLE IF NOT EXISTS envios (
     creado    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_envios_fecha ON envios (fecha);
+
+-- Entradas reales por el lector de la puerta. 'asistencias' es lo que el alumno
+-- dijo que haria; esto es lo que hizo.
+CREATE TABLE IF NOT EXISTS accesos (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    alumno_id   INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+    fecha       TEXT NOT NULL,
+    hora        TEXT NOT NULL,
+    clase_id    TEXT,
+    dispositivo TEXT NOT NULL DEFAULT '',
+    creado      TEXT NOT NULL,
+    UNIQUE (alumno_id, fecha, clase_id)
+);
+CREATE INDEX IF NOT EXISTS ix_accesos_fecha ON accesos (fecha);
+
+-- Tarjetas leidas que aun no pertenecen a nadie, para poder asignarlas desde /admin
+-- con un clic en vez de teclear el UID a mano.
+CREATE TABLE IF NOT EXISTS tarjetas_sin_duenno (
+    uid       TEXT PRIMARY KEY,
+    vista     TEXT NOT NULL,
+    veces     INTEGER NOT NULL DEFAULT 1
+);
 """
+
+# Columnas anadidas despues de la primera version: SQLite no las crea con
+# CREATE TABLE IF NOT EXISTS sobre una tabla que ya existe.
+COLUMNAS_NUEVAS = {
+    "alumnos": {"tarjeta_uid": "TEXT"},
+}
 
 
 def conectar() -> sqlite3.Connection:
@@ -63,6 +91,16 @@ def conectar() -> sqlite3.Connection:
 def inicializar() -> None:
     with conectar() as con:
         con.executescript(ESQUEMA)
+        for tabla, columnas in COLUMNAS_NUEVAS.items():
+            existentes = {f["name"] for f in con.execute(f"PRAGMA table_info({tabla})")}
+            for nombre, tipo in columnas.items():
+                if nombre not in existentes:
+                    con.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}")
+        # UNIQUE en tarjeta_uid, pero permitiendo que muchos alumnos no tengan tarjeta:
+        # un indice unico normal ya trata cada NULL como distinto.
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_alumnos_tarjeta ON alumnos (tarjeta_uid)"
+        )
 
 
 def _ahora() -> str:
@@ -147,11 +185,26 @@ def alumno_por_token(token: str) -> dict | None:
     return dict(fila) if fila else None
 
 
-def listar_alumnos(solo_activos: bool = False) -> list[dict]:
-    sql = "SELECT * FROM alumnos"
-    if solo_activos:
-        sql += " WHERE activo = 1"
-    sql += " ORDER BY nombre COLLATE NOCASE"
+def listar_alumnos(solo_activos: bool = False, con_ultimo_acceso: bool = False) -> list[dict]:
+    """Los alumnos. Con con_ultimo_acceso anade cuando fue la ultima vez que ficho.
+
+    Sirve para ver de un vistazo quien lleva semanas sin aparecer, o si el llavero
+    de alguien ha dejado de leerse.
+    """
+    if con_ultimo_acceso:
+        sql = (
+            "SELECT al.*, (SELECT a.fecha || ' ' || a.hora FROM accesos a"
+            "   WHERE a.alumno_id = al.id ORDER BY a.fecha DESC, a.hora DESC LIMIT 1"
+            " ) AS ultimo_acceso FROM alumnos al"
+        )
+        if solo_activos:
+            sql += " WHERE al.activo = 1"
+        sql += " ORDER BY al.nombre COLLATE NOCASE"
+    else:
+        sql = "SELECT * FROM alumnos"
+        if solo_activos:
+            sql += " WHERE activo = 1"
+        sql += " ORDER BY nombre COLLATE NOCASE"
     with conectar() as con:
         return [dict(f) for f in con.execute(sql)]
 
@@ -288,6 +341,182 @@ def candidatos_para_equilibrar(fecha: str, clase_id: str, sexo: str, semanas: in
             (clase_id, desde, fecha, sexo, fecha, clase_id),
         )
         return [dict(f) for f in filas]
+
+
+# --------------------------------------------------------------------------- #
+# Control de acceso (lector de la puerta)
+# --------------------------------------------------------------------------- #
+# Margen para decidir a que clase corresponde un fichaje, en minutos respecto a
+# la hora de inicio. Se ficha antes de entrar, y siempre hay quien llega tarde.
+ANTES = 30
+DESPUES = 45
+
+
+def normalizar_uid(bruto: str) -> str:
+    """UID de la tarjeta en mayusculas y sin separadores: '04 a2:9f' -> '04A29F'."""
+    limpio = re.sub(r"[^0-9A-Fa-f]", "", bruto or "").upper()
+    if not 4 <= len(limpio) <= 32:
+        raise ValueError(f"UID no valido: {bruto!r}")
+    return limpio
+
+
+def alumno_por_uid(uid: str) -> dict | None:
+    with conectar() as con:
+        fila = con.execute("SELECT * FROM alumnos WHERE tarjeta_uid = ?", (normalizar_uid(uid),)).fetchone()
+    return dict(fila) if fila else None
+
+
+def asignar_tarjeta(alumno_id: int, uid: str | None) -> dict:
+    """Vincula (o desvincula, con uid None) una tarjeta a un alumno."""
+    if uid is None:
+        with conectar() as con:
+            con.execute("UPDATE alumnos SET tarjeta_uid = NULL WHERE id = ?", (alumno_id,))
+        return obtener_alumno(alumno_id)
+
+    limpio = normalizar_uid(uid)
+    with conectar() as con:
+        otro = con.execute(
+            "SELECT nombre FROM alumnos WHERE tarjeta_uid = ? AND id <> ?", (limpio, alumno_id)
+        ).fetchone()
+        if otro:
+            raise ValueError(f"Esa tarjeta ya es de {otro['nombre']}")
+        con.execute("UPDATE alumnos SET tarjeta_uid = ? WHERE id = ?", (limpio, alumno_id))
+        con.execute("DELETE FROM tarjetas_sin_duenno WHERE uid = ?", (limpio,))
+    return obtener_alumno(alumno_id)
+
+
+def _minutos(hhmm: str) -> int:
+    h, m = (int(x) for x in hhmm.split(":"))
+    return h * 60 + m
+
+
+def clase_en_curso(fecha: str, hora: str, alumno_id: int | None = None) -> dict | None:
+    """A que clase corresponde un fichaje a esa hora.
+
+    Con dos salas a la vez hay empates: si el alumno habia confirmado una de las
+    candidatas, se le apunta a esa; si no, a la que empiece mas cerca.
+    """
+    dia = date.fromisoformat(fecha).isoweekday()
+    ahora = _minutos(hora)
+    candidatas = [
+        c for c in horario.clases_del_dia(dia)
+        if -ANTES <= ahora - _minutos(c["hora"]) <= DESPUES
+    ]
+    if not candidatas:
+        return None
+    if len(candidatas) > 1 and alumno_id is not None:
+        confirmadas = set(seleccion_de(alumno_id, fecha))
+        preferidas = [c for c in candidatas if c["id"] in confirmadas]
+        if preferidas:
+            candidatas = preferidas
+    return min(candidatas, key=lambda c: abs(ahora - _minutos(c["hora"])))
+
+
+def registrar_acceso(alumno_id: int, momento: datetime | None = None, dispositivo: str = "") -> dict:
+    """Apunta una entrada real. Repetir el fichaje en la misma clase no duplica."""
+    momento = momento or datetime.now()
+    fecha = momento.date().isoformat()
+    hora = momento.strftime("%H:%M")
+    clase = clase_en_curso(fecha, hora, alumno_id)
+    clase_id = clase["id"] if clase else None
+
+    with conectar() as con:
+        ya = con.execute(
+            "SELECT hora FROM accesos WHERE alumno_id = ? AND fecha = ? AND clase_id IS ?",
+            (alumno_id, fecha, clase_id),
+        ).fetchone()
+        if ya:
+            repetido, hora = True, ya["hora"]
+        else:
+            repetido = False
+            con.execute(
+                "INSERT INTO accesos (alumno_id, fecha, hora, clase_id, dispositivo, creado)"
+                " VALUES (?,?,?,?,?,?)",
+                (alumno_id, fecha, hora, clase_id, dispositivo, _ahora()),
+            )
+
+    previsto = bool(clase_id) and clase_id in seleccion_de(alumno_id, fecha)
+    return {
+        "fecha": fecha,
+        "hora": hora,
+        "clase": clase,
+        "repetido": repetido,
+        "previsto": previsto,
+    }
+
+
+def presentes(fecha: str) -> dict[str, dict[str, int]]:
+    """Cuantos han entrado de verdad en cada clase, por sexo."""
+    with conectar() as con:
+        filas = con.execute(
+            "SELECT a.clase_id, al.sexo, COUNT(*) AS n FROM accesos a"
+            " JOIN alumnos al ON al.id = a.alumno_id"
+            " WHERE a.fecha = ? AND a.clase_id IS NOT NULL"
+            " GROUP BY a.clase_id, al.sexo",
+            (fecha,),
+        ).fetchall()
+    salida: dict[str, dict[str, int]] = {}
+    for f in filas:
+        d = salida.setdefault(f["clase_id"], {"H": 0, "M": 0})
+        d[f["sexo"]] = f["n"]
+    return salida
+
+
+def dentro_de_clase(fecha: str, clase_id: str) -> list[dict]:
+    with conectar() as con:
+        filas = con.execute(
+            "SELECT al.nombre, al.sexo, a.hora FROM accesos a"
+            " JOIN alumnos al ON al.id = a.alumno_id"
+            " WHERE a.fecha = ? AND a.clase_id = ? ORDER BY a.hora",
+            (fecha, clase_id),
+        )
+        return [dict(f) for f in filas]
+
+
+def accesos_del_dia(fecha: str) -> list[dict]:
+    """Todas las entradas del dia, tambien las de fuera del horario de clase.
+
+    Sin esto, quien ficha a una hora en la que no hay clase queda registrado pero
+    no aparece en ninguna pantalla, y parece que el lector no funciona.
+    """
+    with conectar() as con:
+        filas = con.execute(
+            "SELECT al.nombre, al.sexo, a.hora, a.clase_id, a.dispositivo FROM accesos a"
+            " JOIN alumnos al ON al.id = a.alumno_id"
+            " WHERE a.fecha = ? ORDER BY a.hora DESC",
+            (fecha,),
+        ).fetchall()
+    salida = []
+    for f in filas:
+        clase = horario.POR_ID.get(f["clase_id"] or "")
+        salida.append(
+            {
+                "nombre": f["nombre"],
+                "sexo": f["sexo"],
+                "hora": f["hora"],
+                "clase": clase["etiqueta"] if clase else "",
+                "clase_hora": clase["hora"] if clase else "",
+                "dispositivo": f["dispositivo"],
+            }
+        )
+    return salida
+
+
+def anotar_tarjeta_desconocida(uid: str) -> None:
+    limpio = normalizar_uid(uid)
+    with conectar() as con:
+        con.execute(
+            "INSERT INTO tarjetas_sin_duenno (uid, vista, veces) VALUES (?,?,1)"
+            " ON CONFLICT(uid) DO UPDATE SET vista = excluded.vista, veces = veces + 1",
+            (limpio, _ahora()),
+        )
+
+
+def tarjetas_sin_duenno() -> list[dict]:
+    with conectar() as con:
+        return [dict(f) for f in con.execute(
+            "SELECT * FROM tarjetas_sin_duenno ORDER BY vista DESC LIMIT 20"
+        )]
 
 
 # --------------------------------------------------------------------------- #

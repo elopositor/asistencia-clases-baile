@@ -15,6 +15,7 @@
 param(
     [switch]$Quitar,
     [switch]$Demo,
+    [switch]$EnRed,          # necesario para que el lector RFID llegue al servidor
     [string]$HoraPreguntar = "12:00",
     [string]$HoraResumen   = "18:00"
 )
@@ -42,6 +43,7 @@ if ($Quitar) {
 } else {
     $argumentos = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$raiz\publicar.ps1`""
     if ($Demo) { $argumentos += " -Demo" }
+    if ($EnRed) { $argumentos += " -EnRed" }
 
     $accion = New-ScheduledTaskAction -Execute $pwsh -Argument $argumentos -WorkingDirectory $raiz
     # -User es obligatorio: sin el, -AtLogOn significa "al iniciar sesion cualquier

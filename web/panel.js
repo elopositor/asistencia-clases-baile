@@ -91,6 +91,12 @@
                 <span class="pastilla h">${c.hombres} H</span>
                 <span class="pastilla m">${c.mujeres} M</span>
                 <span class="pastilla t">${c.total}</span>
+                ${
+                  d.control_acceso
+                    ? `<span class="pastilla dentro ${c.dentro ? "hay" : ""}" title="han fichado en la puerta">
+                         ${c.dentro}/${c.total} dentro</span>`
+                    : ""
+                }
               </span>
             </button>`
           )
@@ -115,6 +121,7 @@
           <button class="boton secundario" id="copiar">Copiar texto</button>
         </div>
       </div>
+      ${pintarEntradas(d)}
       <div class="seccion" id="zona-envios"></div>`;
 
     $("contenido").querySelectorAll(".fila-clase").forEach((b) => {
@@ -133,6 +140,49 @@
       $("copiar").textContent = "✓ Copiado";
       setTimeout(() => ($("copiar").textContent = "Copiar texto"), 1500);
     });
+  }
+
+  // Quien ha pasado la tarjeta por la puerta, con su hora. Incluye los fichajes
+  // fuera del horario de clase, que si no quedarian registrados pero invisibles.
+  function pintarEntradas(d) {
+    if (!d.control_acceso) return "";
+
+    const aviso = d.tarjetas_sin_asignar
+      ? `<p class="nota" style="color:var(--ambar)">
+           ${d.tarjetas_sin_asignar} tarjeta${d.tarjetas_sin_asignar === 1 ? "" : "s"} sin asignar ·
+           <a href="/admin" style="color:var(--oro)">dile de quién es en Alumnos</a>
+         </p>`
+      : "";
+
+    if (!d.entradas.length) {
+      return `<div class="seccion">
+        <h2>Entradas por la puerta</h2>
+        ${aviso}
+        <p class="nota">Hoy todavía no ha fichado nadie.</p>
+      </div>`;
+    }
+
+    const filas = d.entradas
+      .map(
+        (e) => `<tr>
+          <td class="hora-entrada">${escapar(e.hora)}</td>
+          <td>${escapar(e.nombre)} <span style="opacity:.5">${e.sexo}</span></td>
+          <td>${
+            e.clase
+              ? `${escapar(e.clase_hora)} · ${escapar(e.clase)}`
+              : `<span style="opacity:.5">fuera de horario</span>`
+          }</td>
+        </tr>`
+      )
+      .join("");
+
+    return `<div class="seccion">
+      <h2>Entradas por la puerta · ${d.entradas.length}</h2>
+      ${aviso}
+      <div style="overflow-x:auto"><table class="tabla">
+        <tr><th>Hora</th><th>Alumno</th><th>Clase</th></tr>${filas}
+      </table></div>
+    </div>`;
   }
 
   function pintarEnvios(e) {
@@ -171,9 +221,27 @@
   async function abrirClase(id) {
     const r = await api(`/api/clase/${id}?d=${fecha}`);
     const d = await r.json();
+    // Quien ha fichado en la puerta, para marcar en la lista quien esta ya dentro
+    const horaDe = {};
+    (d.dentro || []).forEach((x) => (horaDe[x.nombre] = x.hora));
+
     const lista = (sexo) =>
-      d.asistentes.filter((a) => a.sexo === sexo).map((a) => escapar(a.nombre)).join("<br>") ||
-      "<span style='opacity:.5'>nadie</span>";
+      d.asistentes
+        .filter((a) => a.sexo === sexo)
+        .map((a) =>
+          horaDe[a.nombre]
+            ? `<span style="color:#8fe0b0">✓ ${escapar(a.nombre)}</span>
+               <span style="opacity:.5;font-size:12px">${horaDe[a.nombre]}</span>`
+            : escapar(a.nombre)
+        )
+        .join("<br>") || "<span style='opacity:.5'>nadie</span>";
+
+    // Quien ha entrado sin haber avisado
+    const sinAvisar = (d.dentro || []).filter((x) => !d.asistentes.some((a) => a.nombre === x.nombre));
+    const extra = sinAvisar.length
+      ? `<p class="nota" style="margin-top:12px">Han entrado sin apuntarse:
+           ${sinAvisar.map((x) => `${escapar(x.nombre)} (${x.hora})`).join(", ")}</p>`
+      : "";
     const sug = d.sugerencias.length
       ? `<h2 style="margin-top:18px">A quién avisar</h2>
          <p class="nota">Suelen venir a esta clase y hoy no han confirmado:</p>
@@ -197,7 +265,7 @@
       <p style="font-size:19px;font-weight:700;margin:0 0 14px">${escapar(d.clase.etiqueta)}</p>
       <table class="tabla"><tr><th>Hombres</th><th>Mujeres</th></tr>
         <tr style="vertical-align:top"><td>${lista("H")}</td><td>${lista("M")}</td></tr></table>
-      ${sug}
+      ${extra}${sug}
       <button class="boton" style="margin-top:18px;width:100%" onclick="this.closest('dialog').close()">Cerrar</button>`;
     $("detalle").showModal();
   }

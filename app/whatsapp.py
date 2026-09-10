@@ -31,10 +31,18 @@ def _dia_texto(fecha: str) -> str:
 
 
 def mensaje_encuesta(alumno: dict, fecha: str) -> str:
+    enlace = enlace_alumno(alumno["token"], fecha)
+    # El plan gratuito de ngrok enseña una pantalla de aviso antes de la web. Sale
+    # una vez por movil, pero sin avisar la gente cree que el enlace esta roto.
+    aviso = (
+        "\n(La primera vez sale una pantalla en inglés: pulsa «Visit Site» y ya entras.)\n"
+        if "ngrok" in enlace
+        else ""
+    )
     return (
         f"¡Hola {alumno['nombre'].split()[0]}! 💃🕺\n"
         f"¿A qué clases vienes el {_dia_texto(fecha)}?\n"
-        f"Marca tus horas aquí (30 segundos):\n{enlace_alumno(alumno['token'], fecha)}\n\n"
+        f"Marca tus horas aquí (30 segundos):\n{enlace}\n{aviso}\n"
         "Así cuadramos parejas y no falta gente de ningún lado. ¡Gracias!"
     )
 

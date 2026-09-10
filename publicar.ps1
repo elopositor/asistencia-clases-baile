@@ -1,16 +1,20 @@
-# Publica la app en internet GRATIS, sin tarjeta ni cuenta, con un tunel de Cloudflare.
+# Publica la app en internet, gratis.
 #
 #   .\publicar.ps1          -> datos reales
 #   .\publicar.ps1 -Demo    -> base de demostracion
+#   .\publicar.ps1 -EnRed   -> ademas accesible en la red local (lector RFID)
 #
-# Mantiene el servidor y el tunel encendidos hasta que pulses Ctrl+C, y si el tunel
-# se cae (suspension del PC, corte de red) lo vuelve a abrir solo.
+# Con NGROK_TOKEN y NGROK_DOMINIO en el .env usa ngrok, y entonces la direccion es
+# SIEMPRE LA MISMA: los enlaces que mandes hoy siguen valiendo dentro de un mes.
+# Sin esos datos cae en un tunel de Cloudflare, que da una direccion nueva cada vez.
 #
-# La direccion cambia en cada arranque: por eso se guarda en data\base_url.txt y
-# la app la lee de ahi, asi los mensajes que envies hoy llevan la de hoy.
+# En ambos casos la direccion viva se guarda en data\base_url.txt y la app la lee
+# de ahi en caliente. Mantiene servidor y tunel encendidos hasta que pulses Ctrl+C,
+# y los levanta solos si se caen.
 
 param(
     [switch]$Demo,
+    [switch]$EnRed,          # escuchar tambien en la red local, para el lector RFID
     [int]$Puerto = 8000
 )
 
@@ -50,6 +54,35 @@ if ($enPath) {
     Write-Host "Descargado en $exe" -ForegroundColor Green
 }
 
+function Leer-Env([string]$clave) {
+    $m = Select-String -Path ".env" -Pattern "^$clave=(.*)$" -ErrorAction SilentlyContinue
+    if ($m) { return $m.Matches.Groups[1].Value.Trim() }
+    return ""
+}
+
+# ngrok con dominio propio: la direccion es siempre la misma, asi que los enlaces
+# que ya has mandado por WhatsApp siguen funcionando manana.
+function Abrir-Ngrok([string]$token, [string]$dominio) {
+    $ngrok = Join-Path $bin "ngrok.exe"
+    if (-not (Test-Path $ngrok)) { throw "No encuentro bin\ngrok.exe" }
+
+    & $ngrok config add-authtoken $token 2>&1 | Out-Null
+
+    Remove-Item $logTunel, "$logTunel.out" -ErrorAction SilentlyContinue
+    $p = Start-Process $ngrok `
+        -ArgumentList "http", "--domain=$dominio", "--log=stdout", "$Puerto" `
+        -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $logTunel -RedirectStandardError "$logTunel.out"
+
+    $url = "https://$dominio"
+    foreach ($i in 1..40) {
+        Start-Sleep -Milliseconds 750
+        if ($p.HasExited) { throw "ngrok se ha cerrado. Mira $logTunel" }
+        if (Responde $url) { return @{ Proceso = $p; Url = $url } }
+    }
+    throw "ngrok no responde en $url. Mira $logTunel"
+}
+
 # Abre un tunel nuevo y devuelve @{ Proceso = ...; Url = ... }
 function Abrir-Tunel {
     Remove-Item $logTunel, "$logTunel.out" -ErrorAction SilentlyContinue
@@ -66,7 +99,21 @@ function Abrir-Tunel {
         $texto = if (Test-Path $logTunel) { Get-Content $logTunel -Raw -ErrorAction SilentlyContinue } else { $null }
         if ($texto) {
             $m = [regex]::Match($texto, "https://[a-z0-9-]+\.trycloudflare\.com")
-            if ($m.Success) { return @{ Proceso = $p; Url = $m.Value } }
+            if ($m.Success) {
+                # El subdominio existe en cuanto cloudflared lo anuncia, pero el DNS
+                # tarda unos segundos en conocerlo. Sin esta espera, la vigilancia lo
+                # toma por caido, abre otro tunel, y se entra en un bucle de
+                # direcciones nuevas que nunca llegan a resolver.
+                Write-Host "Direccion $($m.Value) - esperando a que resuelva el DNS..." -ForegroundColor DarkGray
+                foreach ($j in 1..30) {
+                    if (Responde $m.Value) {
+                        return @{ Proceso = $p; Url = $m.Value }
+                    }
+                    Start-Sleep -Seconds 3
+                }
+                Write-Host "Sigue sin resolver despues de 90 s; la doy por buena igualmente." -ForegroundColor Yellow
+                return @{ Proceso = $p; Url = $m.Value }
+            }
         }
         if ($p.HasExited) { throw "cloudflared se ha cerrado. Mira $logTunel" }
     }
@@ -80,11 +127,12 @@ function Abrir-Tunel {
 function Limpiar-Restos {
     $yo = $PID
     $muertos = 0
-    Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cloudflared.exe'" |
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cloudflared.exe' OR Name='ngrok.exe'" |
         Where-Object {
             $_.ProcessId -ne $yo -and
             ($_.CommandLine -match "uvicorn\s+app\.main:app" -or
-             $_.CommandLine -match "trycloudflare|tunnel --no-autoupdate")
+             $_.CommandLine -match "trycloudflare|tunnel --no-autoupdate" -or
+             $_.CommandLine -match "ngrok.exe.* http")
         } |
         ForEach-Object {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -97,8 +145,11 @@ function Limpiar-Restos {
 }
 
 function Arrancar-Servidor {
+    # 127.0.0.1 = solo este PC (el tunel ya da el acceso de fuera).
+    # 0.0.0.0 = tambien la red local, necesario para que el lector RFID llegue.
+    $escucha = if ($EnRed) { "0.0.0.0" } else { "127.0.0.1" }
     Start-Process $python `
-        -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$Puerto" `
+        -ArgumentList "-m", "uvicorn", "app.main:app", "--host", $escucha, "--port", "$Puerto" `
         -PassThru -WindowStyle Hidden `
         -RedirectStandardError $logServidor -RedirectStandardOutput "$logServidor.out"
 }
@@ -123,9 +174,18 @@ Write-Host "Arrancando el servidor en el puerto $Puerto..." -ForegroundColor Cya
 $servidor = Arrancar-Servidor
 
 $tunel = $null
+$ngrokToken = Leer-Env "NGROK_TOKEN"
+$ngrokDominio = Leer-Env "NGROK_DOMINIO"
+$conNgrok = $ngrokToken -and $ngrokDominio
+
 try {
-    Write-Host "Abriendo el tunel..." -ForegroundColor Cyan
-    $t = Abrir-Tunel
+    if ($conNgrok) {
+        Write-Host "Abriendo ngrok en $ngrokDominio (direccion fija)..." -ForegroundColor Cyan
+        $t = Abrir-Ngrok $ngrokToken $ngrokDominio
+    } else {
+        Write-Host "Abriendo tunel de Cloudflare (direccion nueva cada vez)..." -ForegroundColor Cyan
+        $t = Abrir-Tunel
+    }
     $tunel = $t.Proceso
     $publica = $t.Url
     Guardar-Url $publica
@@ -148,6 +208,7 @@ try {
 
     # --- vigilancia -----------------------------------------------------------
     $fallos = 0
+    $abierto = Get-Date
     while ($true) {
         Start-Sleep -Seconds 60
 
@@ -165,19 +226,28 @@ try {
         $caido = $tunel.HasExited -or -not (Responde $publica)
         if (-not $caido) { $fallos = 0; continue }
 
-        # Un fallo suelto puede ser un corte de un segundo; dos seguidos, no.
         $fallos++
         Write-Host "$(Get-Date -Format 'HH:mm:ss')  el tunel no responde ($fallos)" -ForegroundColor Yellow
-        if ($fallos -lt 2) { continue }
+
+        # Mientras cloudflared siga conectado, el tunel esta bien y lo que falla es
+        # que el nombre aun no se ha publicado en el DNS (puede tardar 10 minutos).
+        # Reabrir en ese momento solo genera otra direccion que empieza de cero, y
+        # se entra en un bucle donde ninguna llega a resolver nunca.
+        if (-not $tunel.HasExited -and ((Get-Date) - $abierto).TotalMinutes -lt 15) {
+            Write-Host "  cloudflared sigue conectado: es el DNS, que tarda. Espero." -ForegroundColor DarkGray
+            continue
+        }
+        if ($fallos -lt 3) { continue }
 
         Write-Host "Reabriendo el tunel..." -ForegroundColor Yellow
         if (-not $tunel.HasExited) { Stop-Process -Id $tunel.Id -Force -ErrorAction SilentlyContinue }
         try {
-            $t = Abrir-Tunel
+            $t = if ($conNgrok) { Abrir-Ngrok $ngrokToken $ngrokDominio } else { Abrir-Tunel }
             $tunel = $t.Proceso
             $publica = $t.Url
             Guardar-Url $publica
             $fallos = 0
+            $abierto = Get-Date
             Write-Host "Nueva direccion: $publica" -ForegroundColor Green
             Write-Host "OJO: los enlaces enviados con la anterior ya no valen." -ForegroundColor Yellow
         } catch {

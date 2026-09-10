@@ -160,6 +160,15 @@ body {
 .pastilla.h { background: rgba(90, 150, 220, .18); color: #93bdf0; }
 .pastilla.m { background: rgba(214, 106, 168, .18); color: #eda3ce; }
 .pastilla.t { background: rgba(227, 193, 105, .15); color: var(--oro); }
+.hora-entrada {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--oro);
+  white-space: nowrap;
+}
+
+.pastilla.dentro { background: rgba(163, 150, 138, .14); color: var(--tenue); font-size: 12px; }
+.pastilla.dentro.hay { background: rgba(63, 166, 106, .18); color: #8fe0b0; }
 
 .tabla { width: 100%; border-collapse: collapse; font-size: 14px; }
 .tabla th, .tabla td { padding: 9px 10px; text-align: left; border-bottom: 1px solid rgba(227, 193, 105, .14); }
