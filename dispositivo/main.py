@@ -314,7 +314,12 @@ def main():
                         senal("ok" if respuesta.get("previsto") else "aviso")
                         nombre = respuesta.get("nombre", "").split(" ")[0]
                         if respuesta.get("tipo") == "salida":
-                            decir("Hasta luego", nombre, 3)
+                            saldo = respuesta.get("saldo")
+                            if respuesta.get("con_bono") and saldo is not None:
+                                decir("Hasta luego " + nombre[:4],
+                                      "Te quedan %d" % saldo, 4)
+                            else:
+                                decir("Hasta luego", nombre, 3)
                             continue
                         if respuesta.get("repetido"):
                             segunda = "Ya fichado " + respuesta.get("entrada", "")
@@ -330,7 +335,9 @@ def main():
                         print(" ", respuesta.get("mensaje"))
                         senal("aviso")
                         motivo = respuesta.get("motivo")
-                        if motivo == "desconocida":
+                        if motivo == "sin_saldo":
+                            decir("Bono agotado", "Ve a recepcion", 5)
+                        elif motivo == "desconocida":
                             decir("Tarjeta nueva", "Ve a recepcion", 4)
                         elif motivo == "baja":
                             decir("Estas de baja", "Habla con Sergio", 4)

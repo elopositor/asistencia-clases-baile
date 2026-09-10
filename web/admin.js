@@ -80,7 +80,7 @@
       `· ${h} hombres / ${m} mujeres activos` + (conTarjeta ? ` · ${conTarjeta} con tarjeta` : "");
 
     $("tabla").innerHTML =
-      `<tr><th>Nombre</th><th>Teléfono</th><th>Sexo</th><th>Activo</th><th>Tarjeta</th><th>Último fichaje</th><th>Enlace</th><th></th></tr>` +
+      `<tr><th>Nombre</th><th>Teléfono</th><th>Sexo</th><th>Activo</th><th>Paga</th><th>Bono</th><th>Tarjeta</th><th>Último fichaje</th><th>Enlace</th><th></th></tr>` +
       alumnos
         .map(
           (a) => `<tr data-id="${a.id}" style="${a.activo ? "" : "opacity:.45"}">
@@ -91,6 +91,11 @@
               <option value="M" ${a.sexo === "M" ? "selected" : ""}>M</option>
             </select></td>
             <td><input type="checkbox" class="activo" ${a.activo ? "checked" : ""}></td>
+            <td><select class="campo tipo-pago" style="padding:5px 8px">
+              <option value="mensual" ${a.tipo_pago !== "bono" ? "selected" : ""}>Cuota</option>
+              <option value="bono" ${a.tipo_pago === "bono" ? "selected" : ""}>Bono</option>
+            </select></td>
+            <td>${bono(a)}</td>
             <td>${
               a.tarjeta_uid
                 ? `<code style="font-size:12px;color:var(--oro)">${escapar(a.tarjeta_uid)}</code>
@@ -117,6 +122,26 @@
         e.target.textContent = "✓";
         setTimeout(() => (e.target.textContent = "Copiar"), 1200);
       });
+      tr.querySelector(".tipo-pago").addEventListener("change", (e) =>
+        api(`/api/alumnos/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ tipo_pago: e.target.value }),
+        }).then(cargar)
+      );
+      tr.querySelectorAll(".recargar").forEach((b) =>
+        b.addEventListener("click", async () => {
+          const r = await api(`/api/alumnos/${id}/saldo`, {
+            method: "POST",
+            body: JSON.stringify({ clases: Number(b.dataset.n) }),
+          });
+          const j = await r.json();
+          $("aviso").textContent = r.ok
+            ? `✓ Bono actualizado: ${j.saldo} clase${j.saldo === 1 ? "" : "s"}`
+            : `⚠ ${j.detail}`;
+          cargar();
+        })
+      );
+
       const quitar = tr.querySelector(".quitar-tarjeta");
       if (quitar)
         quitar.addEventListener("click", () => {
@@ -156,6 +181,21 @@
   ["nombre", "telefono"].forEach((id) =>
     $(id).addEventListener("keydown", (e) => e.key === "Enter" && $("anadir").click())
   );
+
+  // Clases que le quedan, y los botones para recargar. Solo tiene sentido con bono.
+  function bono(a) {
+    if (a.tipo_pago !== "bono")
+      return `<span style="opacity:.3;font-size:12px">—</span>`;
+    const s = a.saldo ?? 0;
+    const color = s <= 0 ? "var(--rojo)" : s <= 2 ? "var(--ambar)" : "var(--verde)";
+    return `<span class="saldo" style="color:${color};font-weight:700;font-variant-numeric:tabular-nums">${s}</span>
+            <button class="boton secundario recargar" data-n="10"
+                    style="padding:3px 8px;font-size:11px" title="Añadir 10 clases">+10</button>
+            <button class="boton secundario recargar" data-n="1"
+                    style="padding:3px 8px;font-size:11px" title="Añadir una clase">+1</button>
+            <button class="boton secundario recargar" data-n="-1"
+                    style="padding:3px 8px;font-size:11px" title="Quitar una clase">−1</button>`;
+  }
 
   // "2026-09-10 15:11" -> "hoy 15:11" / "ayer 21:30" / "10/09 15:11"
   function fichaje(valor) {

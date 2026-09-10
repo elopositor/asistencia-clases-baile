@@ -79,6 +79,22 @@ CREATE TABLE IF NOT EXISTS estancias (
 CREATE INDEX IF NOT EXISTS ix_estancias_fecha ON estancias (fecha);
 CREATE INDEX IF NOT EXISTS ix_estancias_abierta ON estancias (alumno_id, fecha, salida);
 
+-- Bonos de clases sueltas. El saldo no se guarda como un numero suelto: es la suma
+-- de estos movimientos, asi siempre se puede ver de donde sale y no hay forma de
+-- que se desajuste.
+CREATE TABLE IF NOT EXISTS movimientos (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    alumno_id   INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+    cantidad    INTEGER NOT NULL,          -- + al recargar, - al asistir
+    motivo      TEXT NOT NULL DEFAULT '',
+    estancia_id INTEGER,                   -- que visita lo gasto, si fue por asistir
+    fecha       TEXT NOT NULL,
+    creado      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_mov_alumno ON movimientos (alumno_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_mov_estancia ON movimientos (estancia_id)
+    WHERE estancia_id IS NOT NULL;
+
 -- Tarjetas leidas que aun no pertenecen a nadie, para poder asignarlas desde /admin
 -- con un clic en vez de teclear el UID a mano.
 CREATE TABLE IF NOT EXISTS tarjetas_sin_duenno (
@@ -91,7 +107,9 @@ CREATE TABLE IF NOT EXISTS tarjetas_sin_duenno (
 # Columnas anadidas despues de la primera version: SQLite no las crea con
 # CREATE TABLE IF NOT EXISTS sobre una tabla que ya existe.
 COLUMNAS_NUEVAS = {
-    "alumnos": {"tarjeta_uid": "TEXT"},
+    # 'mensual' paga cuota y entra siempre; 'bono' gasta una clase cada vez.
+    # Por defecto mensual: asi nadie se queda fuera al estrenar los bonos.
+    "alumnos": {"tarjeta_uid": "TEXT", "tipo_pago": "TEXT NOT NULL DEFAULT 'mensual'"},
 }
 
 
@@ -177,7 +195,7 @@ def crear_alumno(nombre: str, telefono: str, sexo: str, notas: str = "") -> dict
 
 
 def actualizar_alumno(alumno_id: int, **campos) -> dict:
-    permitidos = {"nombre", "telefono", "sexo", "activo", "notas"}
+    permitidos = {"nombre", "telefono", "sexo", "activo", "notas", "tipo_pago"}
     cambios = {k: v for k, v in campos.items() if k in permitidos and v is not None}
     if "telefono" in cambios:
         cambios["telefono"] = normalizar_telefono(cambios["telefono"])
@@ -187,6 +205,9 @@ def actualizar_alumno(alumno_id: int, **campos) -> dict:
             raise ValueError("El sexo debe ser 'H' o 'M'")
     if "activo" in cambios:
         cambios["activo"] = 1 if cambios["activo"] else 0
+    if "tipo_pago" in cambios:
+        if cambios["tipo_pago"] not in ("mensual", "bono"):
+            raise ValueError("El tipo de pago debe ser 'mensual' o 'bono'")
     if not cambios:
         return obtener_alumno(alumno_id)
     sets = ", ".join(f"{k} = ?" for k in cambios)
@@ -227,6 +248,8 @@ def listar_alumnos(solo_activos: bool = False, con_ultimo_acceso: bool = False) 
             "    WHERE e.alumno_id = al.id ORDER BY e.fecha DESC, e.entrada DESC LIMIT 1"
             " ) AS ultimo_acceso,"
             " (SELECT COUNT(*) FROM estancias e WHERE e.alumno_id = al.id) AS veces,"
+            " (SELECT COALESCE(SUM(m.cantidad), 0) FROM movimientos m"
+            "    WHERE m.alumno_id = al.id) AS saldo,"
             " (SELECT 1 FROM estancias e WHERE e.alumno_id = al.id AND e.salida IS NULL"
             "    AND e.fecha = date('now','localtime')) AS dentro"
             " FROM alumnos al"
@@ -451,11 +474,68 @@ def clase_en_curso(fecha: str, hora: str, alumno_id: int | None = None) -> dict 
 MINUTOS_MINIMOS = 3
 
 
+# --------------------------------------------------------------------------- #
+# Bonos de clases sueltas
+# --------------------------------------------------------------------------- #
+def saldo_de(alumno_id: int) -> int:
+    """Clases que le quedan. Puede quedar en negativo si se queda a mas de las que tenia."""
+    with conectar() as con:
+        fila = con.execute(
+            "SELECT COALESCE(SUM(cantidad), 0) AS n FROM movimientos WHERE alumno_id = ?",
+            (alumno_id,),
+        ).fetchone()
+    return fila["n"]
+
+
+def recargar(alumno_id: int, clases: int, motivo: str = "") -> int:
+    """Suma clases al bono (o las resta, con un numero negativo). Devuelve el saldo."""
+    if clases == 0:
+        raise ValueError("Di cuantas clases")
+    with conectar() as con:
+        con.execute(
+            "INSERT INTO movimientos (alumno_id, cantidad, motivo, estancia_id, fecha, creado)"
+            " VALUES (?,?,?,NULL,?,?)",
+            (alumno_id, clases, motivo.strip() or ("recarga" if clases > 0 else "ajuste"),
+             date.today().isoformat(), _ahora()),
+        )
+    return saldo_de(alumno_id)
+
+
+def cobrar_estancia(alumno_id: int, estancia_id: int, clases: int, fecha: str) -> int:
+    """Descuenta del bono las clases a las que fue. Nunca cobra dos veces la misma visita."""
+    if clases <= 0:
+        return saldo_de(alumno_id)
+    with conectar() as con:
+        ya = con.execute(
+            "SELECT cantidad FROM movimientos WHERE estancia_id = ?", (estancia_id,)
+        ).fetchone()
+        if ya:
+            return saldo_de(alumno_id)
+        con.execute(
+            "INSERT INTO movimientos (alumno_id, cantidad, motivo, estancia_id, fecha, creado)"
+            " VALUES (?,?,?,?,?,?)",
+            (alumno_id, -clases, f"{clases} clase{'s' if clases > 1 else ''}",
+             estancia_id, fecha, _ahora()),
+        )
+    return saldo_de(alumno_id)
+
+
+def movimientos_de(alumno_id: int, limite: int = 40) -> list[dict]:
+    with conectar() as con:
+        filas = con.execute(
+            "SELECT * FROM movimientos WHERE alumno_id = ? ORDER BY id DESC LIMIT ?",
+            (alumno_id, limite),
+        )
+        return [dict(f) for f in filas]
+
+
 def registrar_acceso(alumno_id: int, momento: datetime | None = None, dispositivo: str = "") -> dict:
     """Un paso por la puerta: abre la estancia si estaba fuera, la cierra si dentro."""
     momento = momento or datetime.now()
     fecha = momento.date().isoformat()
     hora = momento.strftime("%H:%M")
+    alumno = obtener_alumno(alumno_id)
+    con_bono = alumno.get("tipo_pago") == "bono"
 
     with conectar() as con:
         abierta = con.execute(
@@ -464,8 +544,30 @@ def registrar_acceso(alumno_id: int, momento: datetime | None = None, dispositiv
             (alumno_id, fecha),
         ).fetchone()
 
+    # Entrar con el bono agotado no se registra: la barrera esta en la puerta, no
+    # al salir, que para entonces ya ha dado la clase.
+    if con_bono and not abierta and saldo_de(alumno_id) <= 0:
+        return {
+            "fecha": fecha,
+            "hora": hora,
+            "tipo": "rechazado",
+            "motivo": "sin_saldo",
+            "saldo": saldo_de(alumno_id),
+            "entrada": None,
+            "salida": None,
+            "minutos": None,
+            "clase": None,
+            "clases": [],
+            "repetido": False,
+            "previsto": False,
+        }
+
+    with conectar() as con:
+
+        estancia_id = None
         if abierta:
             dentro = _minutos(hora) - _minutos(abierta["entrada"])
+            estancia_id = abierta["id"]
             if dentro < MINUTOS_MINIMOS:
                 # Doble toque: se deja la entrada como estaba
                 tipo, repetido, entrada, salida = "entrada", True, abierta["entrada"], None
@@ -484,17 +586,23 @@ def registrar_acceso(alumno_id: int, momento: datetime | None = None, dispositiv
             if recien and _minutos(hora) - _minutos(recien["salida"]) < MINUTOS_MINIMOS:
                 con.execute("UPDATE estancias SET salida = NULL WHERE id = ?", (recien["id"],))
                 tipo, repetido, entrada, salida = "entrada", True, recien["entrada"], None
+                estancia_id = recien["id"]
             else:
-                con.execute(
+                cur = con.execute(
                     "INSERT INTO estancias (alumno_id, fecha, entrada, salida, dispositivo, creado)"
                     " VALUES (?,?,?,NULL,?,?)",
                     (alumno_id, fecha, hora, dispositivo, _ahora()),
                 )
                 tipo, repetido, entrada, salida = "entrada", False, hora, None
+                estancia_id = cur.lastrowid
 
     clases = clases_de_estancia(fecha, entrada, salida, alumno_id)
     confirmadas = set(seleccion_de(alumno_id, fecha))
     clase_actual = clase_en_curso(fecha, hora, alumno_id)
+
+    # Se cobra al salir, que es cuando se sabe a cuantas clases se ha quedado
+    if con_bono and tipo == "salida":
+        cobrar_estancia(alumno_id, estancia_id, len(clases), fecha)
 
     return {
         "fecha": fecha,
@@ -507,6 +615,9 @@ def registrar_acceso(alumno_id: int, momento: datetime | None = None, dispositiv
         "clases": clases,
         "repetido": repetido,
         "previsto": bool(clase_actual) and clase_actual["id"] in confirmadas,
+        "con_bono": con_bono,
+        "saldo": saldo_de(alumno_id) if con_bono else None,
+        "cobradas": len(clases) if (con_bono and tipo == "salida") else 0,
     }
 
 

@@ -342,6 +342,15 @@ def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None
     res = db.registrar_acceso(alumno["id"], dispositivo=dispositivo)
     nombre = alumno["nombre"].split()[0]
 
+    if res["tipo"] == "rechazado":
+        return {
+            "ok": False,
+            "motivo": res["motivo"],
+            "nombre": alumno["nombre"],
+            "saldo": res["saldo"],
+            "mensaje": f"{nombre}: bono agotado, pasa por recepcion",
+        }
+
     if res["repetido"]:
         mensaje = f"{nombre}, ya fichaste a las {res['entrada']}"
     elif res["tipo"] == "salida":
@@ -365,6 +374,9 @@ def api_fichaje(cuerpo: dict = Body(...), x_device_key: str | None = Header(None
         "minutos": res["minutos"],
         "previsto": res["previsto"],
         "repetido": res["repetido"],
+        "con_bono": res["con_bono"],
+        "saldo": res["saldo"],
+        "cobradas": res["cobradas"],
         "mensaje": mensaje,
     }
 
@@ -387,6 +399,42 @@ def api_borrar_entrada(estancia_id: int, key: str | None = None,
     if not db.borrar_estancia(estancia_id):
         raise HTTPException(status_code=404, detail="Ese fichaje ya no existe")
     return {"ok": True}
+
+
+@app.post("/api/alumnos/{alumno_id}/saldo")
+def api_recargar(alumno_id: int, cuerpo: dict = Body(...), key: str | None = None,
+                 x_admin_key: str | None = Header(None)):
+    """Suma (o resta, en negativo) clases al bono de un alumno."""
+    _exigir_clave(key, x_admin_key)
+    try:
+        clases = int(cuerpo.get("clases", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="'clases' debe ser un numero") from None
+    try:
+        db.obtener_alumno(alumno_id)
+        saldo = db.recargar(alumno_id, clases, str(cuerpo.get("motivo", "")))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado") from None
+    return {"ok": True, "saldo": saldo}
+
+
+@app.get("/api/alumnos/{alumno_id}/saldo")
+def api_saldo(alumno_id: int, key: str | None = None, x_admin_key: str | None = Header(None)):
+    """Saldo y de donde sale: recargas y clases gastadas."""
+    _exigir_clave(key, x_admin_key)
+    try:
+        alumno = db.obtener_alumno(alumno_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado") from None
+    return {
+        "alumno": alumno["nombre"],
+        "tipo_pago": alumno.get("tipo_pago", "mensual"),
+        "saldo": db.saldo_de(alumno_id),
+        "movimientos": db.movimientos_de(alumno_id),
+        "historico": db.historico_de(alumno_id, 20),
+    }
 
 
 @app.get("/api/tarjetas")
